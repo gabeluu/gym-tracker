@@ -41,7 +41,8 @@
     return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   }
 
-  function persist() { Store.save(db); }
+  let achCache = null; // see ach()
+  function persist() { Store.save(db); achCache = null; }
   function commit() { persist(); render(); }
 
   let toastTimer;
@@ -91,19 +92,16 @@
       if (confirm("No completed sets. Discard this workout?")) { db.active = null; commit(); }
       return;
     }
-    const prs = [];
-    for (const e of entries) {
-      const rec = Progression.records(db.sessions, e.exerciseId);
-      if (!rec.history.length) continue;
-      const best = Math.max(...e.sets.map((s) => Progression.e1rm(s.w, s.r)));
-      const top = Math.max(...e.sets.map((s) => s.w));
-      if (best > rec.maxE + 0.01 || top > rec.maxW) prs.push(exById(e.exerciseId)?.name);
-    }
     const nSets = entries.reduce((n, e) => n + e.sets.length, 0);
     const before = Achievements.compute(db);
     db.sessions.push({ ...a, entries, finishedAt: new Date().toISOString() });
     db.active = null;
-    const { unlocked, levelUps } = Achievements.diff(before, Achievements.compute(db));
+    const after = Achievements.compute(db);
+    const { unlocked, levelUps } = Achievements.diff(before, after);
+    // PRs from the same rules the awards use (weighted e1RM / top weight, or more bodyweight reps).
+    const prs = entries
+      .filter((e) => (after.ex.get(e.exerciseId)?.prs || 0) > (before.ex.get(e.exerciseId)?.prs || 0))
+      .map((e) => exById(e.exerciseId)?.name || "?");
     commit();
     window.scrollTo(0, 0);
     const summary = `${entries.length} exercise${entries.length === 1 ? "" : "s"}, ${nSets} sets`;
@@ -186,7 +184,7 @@
     h += `<div class="sets"><div class="set head"><span>#</span><span>${unit()}</span><span>reps</span><span></span></div>`;
     en.sets.forEach((s, si) => {
       const t = effTarget(en, si, sug);
-      const pr = s.done && rec.maxE > 0 && (Progression.e1rm(s.w, s.r) > rec.maxE + 0.01 || s.w > rec.maxW);
+      const pr = isPR(ex.id, s);
       h += `<div class="set ${s.done ? "done" : ""}">
         <span class="n">${pr ? "🏆" : si + 1}</span>
         <input inputmode="decimal" autocomplete="off" data-bind="w" data-ei="${ei}" data-si="${si}" value="${fmt(s.w)}" placeholder="${t.w == null ? "–" : fmt(t.w)}">
@@ -274,11 +272,10 @@
   }
 
   // ---------- achievements ----------
-  // Cached per render: compute() walks all history once, which is cheap but needn't run per card.
-  let achCache = null, achKey = null;
+  // Cached between saves: compute() walks all history once, which is cheap but needn't run per card.
+  // persist() clears it, so any change (edited rep range, deleted session, restored backup) is picked up.
   function ach() {
-    const key = db.sessions.length + ":" + (db.sessions[db.sessions.length - 1]?.id || "") + ":" + db.exercises.length;
-    if (achKey !== key || !achCache) { achCache = Achievements.compute(db); achKey = key; }
+    if (!achCache) achCache = Achievements.compute(db);
     return achCache;
   }
   const pct = (x) => `${Math.round(x * 100)}%`;
@@ -289,6 +286,14 @@
   const famDesc = (id, n) => famText(id).desc(n, Achievements.C);
   const tierChip = (t) => (t ? `<span class="tier" style="--t:${t.color}">${esc(t.name)}</span>` : `<span class="tier locked">${esc(TX().locked)}</span>`);
   const lvl = (n) => `<span class="lvl">${esc(TX().levelWord)} ${n}</span>`;
+  // Would this logged set be a PR? Same rules as Achievements: weighted = beats best e1RM or top weight,
+  // bodyweight (0) = more reps than ever. A first-ever session sets the baseline, so it's never a PR.
+  function isPR(exId, s) {
+    const st = ach().ex.get(exId);
+    if (!s.done || !st) return false;
+    if (s.w > 0) return st.w.first > 0 && (Progression.e1rm(s.w, s.r) > st.w.best + 0.01 || s.w > st.w.maxW + 0.01);
+    return st.bw.first > 0 && s.r > st.bw.maxR;
+  }
   function lvlBadge(exId) {
     const st = ach().ex.get(exId);
     return st ? ` ${lvl(st.level)}` : "";
