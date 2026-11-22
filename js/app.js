@@ -57,9 +57,10 @@
   // ---------- workout logic ----------
   function suggestionFor(exId) {
     const ex = exById(exId);
-    const last = Progression.lastEntry(db.sessions, exId);
+    const [last, prev] = Progression.recentEntries(db.sessions, exId, 2);
     const lastSets = last ? Progression.doneSets(last.entry) : [];
-    return { ex, last, lastSets, sug: Progression.suggest(ex, lastSets) };
+    const prevSets = prev ? Progression.doneSets(prev.entry) : [];
+    return { ex, last, lastSets, sug: Progression.suggest(ex, lastSets, prevSets) };
   }
 
   // Placeholder/target for a set: the suggestion, but carry a weight you changed on the previous set forward.
@@ -109,8 +110,79 @@
     else toast(`Saved: ${summary}.`);
   }
 
+  // ---------- rest timer ----------
+  // State lives on db.active.rest = { endsAt (ms), total (s), done } so it survives a reload and ends with the workout.
+  const restCfg = () => ({ on: true, sec: 90, ...(db.settings.rest || {}) });
+  let restTick = null, audioCtx = null;
+
+  function unlockAudio() { // must run inside a tap, or phones block the beep later
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+    } catch (e) { audioCtx = null; }
+  }
+  function beep() {
+    if (!audioCtx) return;
+    try {
+      [0, 0.25].forEach((t) => {
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.frequency.value = 880; o.connect(g); g.connect(audioCtx.destination);
+        const at = audioCtx.currentTime + t;
+        g.gain.setValueAtTime(0.25, at); g.gain.exponentialRampToValueAtTime(0.001, at + 0.18);
+        o.start(at); o.stop(at + 0.2);
+      });
+    } catch (e) { /* audio unavailable */ }
+  }
+  function startRest(ex) {
+    const cfg = restCfg();
+    const sec = ex && ex.rest != null ? ex.rest : cfg.sec;
+    if (!cfg.on || !(sec > 0)) return;
+    db.active.rest = { endsAt: Date.now() + sec * 1000, total: sec, done: false };
+    persist(); syncRest();
+  }
+  function syncRest() {
+    if (db.active?.rest && !restTick) restTick = setInterval(tickRest, 250);
+    tickRest();
+  }
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  function tickRest() {
+    const bar = $("#restbar"), r = db.active?.rest;
+    const over = r ? Date.now() - r.endsAt : 0;
+    if (!r || over > 30000) { // hide 30 s after it ends
+      if (r) { delete db.active.rest; persist(); }
+      bar.hidden = true; document.body.classList.remove("resting");
+      clearInterval(restTick); restTick = null; return;
+    }
+    if (over >= 0 && !r.done) {
+      r.done = true; persist();
+      if (over < 5000) { navigator.vibrate?.([400, 150, 400]); beep(); } // don't buzz for a rest that ended while the app was closed
+    }
+    const left = Math.max(0, Math.ceil(-over / 1000));
+    bar.hidden = false; document.body.classList.add("resting");
+    bar.classList.toggle("over", over >= 0);
+    $("#restTime").textContent = over >= 0 ? "Go!" : mmss(left);
+    $("#restLabel").textContent = over >= 0 ? "Rest over, next set" : "Rest";
+    $("#restFill").style.width = `${Math.min(100, (1 - left / r.total) * 100)}%`;
+  }
+
+  // ---------- keep screen awake during a workout ----------
+  let wakeLock = null, wakeBusy = false;
+  async function syncWakeLock() {
+    const want = !!db.active && db.settings.wakeLock !== false && document.visibilityState === "visible";
+    if (wakeBusy || !("wakeLock" in navigator) || want === !!wakeLock) return;
+    wakeBusy = true;
+    try {
+      if (want) {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { wakeLock = null; });
+      } else { await wakeLock.release(); wakeLock = null; }
+    } catch (e) { wakeLock = null; } // denied (e.g. low battery mode): the screen just locks as usual
+    wakeBusy = false;
+  }
+
   // ---------- views ----------
   function render() {
+    syncRest(); syncWakeLock();
     document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.tab === ui.tab));
     const tabT = TX().tab, awardsTab = $('.tabbar [data-tab="awards"]');
     if (awardsTab) awardsTab.innerHTML = `<span>${tabT.icon}</span>${esc(tabT.label)}`;
@@ -162,7 +234,7 @@
     return h;
   }
 
-  const STATUS = { new: "New", increase: "▲ Go up", build: "Target", struggling: "Hold" };
+  const STATUS = { new: "New", increase: "▲ Go up", build: "Target", struggling: "Hold", deload: "▼ Deload" };
 
   function targetText(targets) {
     const ws = [...new Set(targets.map((t) => t.w))];
@@ -179,7 +251,10 @@
     let h = `<section class="card ex ${en.sets.length && done === en.sets.length ? "complete" : ""}">
       <div class="row-between"><h2>${esc(ex.name)}${lvlBadge(ex.id)}</h2><button class="icon" data-act="removeEntry" data-ei="${ei}" aria-label="Remove exercise">✕</button></div>
       <div class="muted small">${ex.sets}×${ex.repMin}–${ex.repMax} · +${fmt(ex.inc)} ${unit()}${rec.maxE ? ` · best e1RM ${fmt(Math.round(rec.maxE * 10) / 10)}` : ""}</div>`;
-    if (last) h += `<div class="last"><span class="label">Last · ${fmtDate(last.session.date)}</span>${lastSets.map((s) => `${fmt(s.w)}×${s.r}`).join(", ")}</div>`;
+    // Machine taken? Offer the exercise's substitutes (built-in swap groups) that aren't already in this workout.
+    const subs = (ex.substitutes || []).filter((id) => exById(id) && !db.active.entries.some((x) => x.exerciseId === id));
+    if (subs.length) h += `<div class="swap small"><span class="muted">⇄ Swap for</span>${subs.map((id) => `<button class="chip" data-act="swapEx" data-ei="${ei}" data-id="${id}">${esc(exById(id).name)}</button>`).join("")}</div>`;
+    if (last) h +=`<div class="last"><span class="label">Last · ${fmtDate(last.session.date)}</span>${lastSets.map((s) => `${fmt(s.w)}×${s.r}`).join(", ")}</div>`;
     h += `<div class="target ${sug.status}"><span class="label">${STATUS[sug.status]}</span>${targetText(sug.targets)}<div class="small note">${esc(sug.note)}</div></div>`;
     h += `<div class="sets"><div class="set head"><span>#</span><span>${unit()}</span><span>reps</span><span></span></div>`;
     en.sets.forEach((s, si) => {
@@ -216,13 +291,21 @@
       ${bar("Protein", tot.p, g.p, "p")}${bar("Carbs", tot.c, g.c, "c")}${bar("Fat", tot.f, g.f, "f")}
     </section>`;
     h += `<div class="row gap"><button class="btn primary grow big" data-act="openFoodPicker">+ Add food</button><button class="btn big" data-act="quickAdd">Quick add</button></div>`;
+    const today = Store.dayKey(), isToday = day === today;
+    const prevDay = Store.shiftDay(day, -1), prevCount = db.foodLog.filter((e) => e.day === prevDay).length;
     h += `<section class="card"><h2>Entries</h2>`;
-    if (!entries.length) h += `<p class="muted">Nothing logged ${day === Store.dayKey() ? "yet today" : "this day"}.</p>`;
+    if (!entries.length) h += `<p class="muted">Nothing logged ${isToday ? "yet today" : "this day"}.</p>`;
     for (const e of entries) {
       const food = e.foodId ? foodById(e.foodId) : null;
       const q = e.foodId ? (food && food.per === "100g" ? `${fmt(e.qty)} g` : `${fmt(e.qty)} serv`) : "";
-      h += `<div class="list-item static"><div><b>${esc(e.name)}</b> <span class="muted small">${q}</span><div class="muted small">${r0(e.kcal)} kcal · P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</div></div><button class="icon" data-act="delLog" data-id="${e.id}" aria-label="Delete entry">✕</button></div>`;
+      h += `<div class="list-item static"><div><b>${esc(e.name)}</b> <span class="muted small">${q}</span><div class="muted small">${r0(e.kcal)} kcal · P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</div></div><span class="row">
+        ${isToday ? "" : `<button class="icon" data-act="relogEntry" data-id="${e.id}" aria-label="Log again today" title="Log again today">↻</button>`}
+        <button class="icon" data-act="delLog" data-id="${e.id}" aria-label="Delete entry">✕</button></span></div>`;
     }
+    const copyBtns = [];
+    if (!isToday && entries.length) copyBtns.push(`<button class="btn sm" data-act="copyDayToToday">⧉ Copy this day to today</button>`);
+    if (prevCount) copyBtns.push(`<button class="btn sm ghost" data-act="copyPrevDay">⧉ Copy ${isToday ? "yesterday" : "previous day"} (${prevCount})</button>`);
+    if (copyBtns.length) h += `<div class="row gap wrap mt">${copyBtns.join("")}</div>`;
     h += `</section>`;
     return h;
   }
@@ -243,7 +326,7 @@
       if (!db.sessions.length) return h + `<p class="muted center">No finished workouts yet.</p>`;
       for (const s of [...db.sessions].reverse()) {
         const rn = db.routines.find((r) => r.id === s.routineId)?.name || "Workout";
-        h += `<section class="card"><div class="row-between"><h2>${esc(rn)} <span class="muted small">${fmtDate(s.date)}</span></h2><button class="icon" data-act="delSession" data-id="${s.id}" aria-label="Delete session">✕</button></div>`;
+        h += `<section class="card"><div class="row-between"><h2>${esc(rn)} <span class="muted small">${fmtDate(s.date)}</span></h2><span class="row"><button class="btn sm ghost" data-act="editSession" data-id="${s.id}">Edit</button><button class="icon" data-act="delSession" data-id="${s.id}" aria-label="Delete session">✕</button></span></div>`;
         for (const e of s.entries) h += `<div class="small"><b>${esc(exById(e.exerciseId)?.name || "(deleted)")}</b>: ${e.sets.map((x) => `${fmt(x.w)}×${x.r}`).join(", ")}</div>`;
         h += `</section>`;
       }
@@ -388,6 +471,12 @@
           <label>Fat (g)<input inputmode="numeric" data-goal="f" value="${fmt(g.f)}"></label>
         </div>
         <p class="muted small" id="macroKcal">${macroKcalText()}</p></section>
+      <section class="card"><h2>Workout</h2>
+        <div class="row-between"><span>Rest timer after each set</span><div class="seg compact"><button class="${restCfg().on ? "on" : ""}" data-act="setRestOn" data-v="1">On</button><button class="${restCfg().on ? "" : "on"}" data-act="setRestOn" data-v="0">Off</button></div></div>
+        <label class="mt">Default rest (seconds)<input inputmode="numeric" data-restsec value="${restCfg().sec}"></label>
+        <p class="muted small">Each exercise can override this in its settings. Your phone vibrates (Android) and beeps when rest is over.</p>
+        <div class="row-between mt"><span>Keep screen on during workouts</span><div class="seg compact"><button class="${db.settings.wakeLock !== false ? "on" : ""}" data-act="setWake" data-v="1">On</button><button class="${db.settings.wakeLock === false ? "on" : ""}" data-act="setWake" data-v="0">Off</button></div></div>
+      </section>
       ${themePicker()}
       <section class="card"><h2>Data</h2>
         <p class="muted small">Everything is stored on this device only. Last backup: <b>${lastBk}</b>.</p>
@@ -466,6 +555,11 @@
     return list.map((f) => `<div class="list-item" data-act="pickFood" data-id="${f.id}"><div><b>${esc(f.name)}</b><div class="muted small">${perDesc(f)}</div></div><span class="chev">›</span></div>`).join("");
   }
 
+  // Re-log entries on another day as new entries (same snapshot of name/amount/macros).
+  function copyFood(list, day) {
+    for (const e of list) db.foodLog.push({ ...e, id: Store.uid(), day });
+  }
+
   function scaleFood(f, qty) {
     const k = f.per === "100g" ? qty / 100 : qty;
     return { kcal: f.kcal * k, p: f.p * k, c: f.c * k, f: f.f * k };
@@ -487,6 +581,24 @@
       b += `<button class="btn primary big" data-act="closeModal">${esc(X.celebrateButton)}</button>`;
       return { title: X.celebrateTitle, body: b };
     },
+    sessionEdit() {
+      const d = ui.sessionDraft;
+      let b = `<label>Date<input type="date" data-sdate value="${Store.dayKey(d.date)}" max="${Store.dayKey()}"></label>`;
+      d.entries.forEach((e, ei) => {
+        b += `<div class="card"><div class="row-between"><b>${esc(exById(e.exerciseId)?.name || "(deleted exercise)")}</b><button class="icon" data-act="sRmEntry" data-ei="${ei}" aria-label="Remove exercise">✕</button></div>
+          <div class="sets"><div class="set head"><span>#</span><span>${unit()}</span><span>reps</span><span></span></div>`;
+        e.sets.forEach((s, si) => {
+          b += `<div class="set"><span class="n">${si + 1}</span>
+            <input inputmode="decimal" autocomplete="off" data-sbind="w" data-ei="${ei}" data-si="${si}" value="${fmt(s.w)}">
+            <input inputmode="numeric" autocomplete="off" data-sbind="r" data-ei="${ei}" data-si="${si}" value="${fmt(s.r)}">
+            <button class="icon" data-act="sRmSet" data-ei="${ei}" data-si="${si}" aria-label="Remove set">✕</button></div>`;
+        });
+        b += `</div><button class="btn sm" data-act="sAddSet" data-ei="${ei}">+ Set</button></div>`;
+      });
+      if (!d.entries.length) b += `<p class="muted">No exercises left. Saving will delete this workout.</p>`;
+      b += `<button class="btn primary big" data-act="saveSession">Save changes</button><p class="muted small center">Closing without saving discards your edits. Awards and levels update automatically.</p>`;
+      return { title: "Edit workout", body: b };
+    },
     exPicker() {
       return { title: "Add exercise", body: `<input class="search" type="search" placeholder="Search, or type a new name" data-search="ex" value="${esc(ui.modal.q)}" autofocus><div id="mlist" class="stack">${exPickerList()}</div>` };
     },
@@ -499,6 +611,7 @@
           <label>Name<input name="name" required value="${esc(e.name)}" ${m.id ? "" : "autofocus"}></label>
           <div class="grid2"><label>Min reps<input name="repMin" inputmode="numeric" value="${e.repMin}"></label><label>Max reps<input name="repMax" inputmode="numeric" value="${e.repMax}"></label></div>
           <div class="grid2"><label>Sets<input name="sets" inputmode="numeric" value="${e.sets}"></label><label>Weight step (${unit()})<input name="inc" inputmode="decimal" value="${fmt(e.inc)}"></label></div>
+          <div class="grid2"><label>Rest (seconds)<input name="rest" inputmode="numeric" value="${e.rest == null ? "" : e.rest}" placeholder="default ${restCfg().sec}"></label><span class="muted small rest-hint">Blank = your default from Settings. 0 = no timer.</span></div>
           <p class="muted small">Double progression: once you hit <b>max reps on every set</b>, the target weight goes up by the step and reps reset to min.</p>
           ${e.is_baseline ? baselineInfo(e) : ""}
           <button class="btn primary big" type="submit">Save</button>
@@ -573,6 +686,9 @@
       if (!(v.repMin > 0 && v.repMax >= v.repMin)) return toast("Rep range must be like 8–12");
       if (!(v.sets > 0)) return toast("Sets must be at least 1");
       if (!(v.inc > 0)) return toast("Weight step must be more than 0");
+      const rest = num(fd.get("rest"));
+      if (rest != null && !(rest >= 0 && rest <= 900)) return toast("Rest must be 0–900 seconds");
+      v.rest = rest == null ? undefined : Math.round(rest);
       v.repMin = Math.round(v.repMin); v.repMax = Math.round(v.repMax); v.sets = Math.round(v.sets);
       if (m.id) {
         Object.assign(exById(m.id), v);
@@ -639,8 +755,26 @@
         return;
       }
       Object.assign(s, { w, r, done: true });
+      unlockAudio();
+      startRest(exById(en.exerciseId));
       commit();
     },
+    swapEx: (d) => {
+      const en = db.active.entries[d.ei], from = exById(en.exerciseId), to = exById(d.id);
+      const n = en.sets.filter((s) => s.done).length;
+      if (n && !confirm(`Swap ${from.name} for ${to.name}? The ${n} set${n === 1 ? "" : "s"} you logged on ${from.name} will be dropped.`)) return;
+      db.active.entries[d.ei] = newEntry(d.id);
+      commit(); toast(`Swapped to ${to.name}`);
+    },
+    restAdj: (d) => {
+      const r = db.active?.rest;
+      if (!r) return;
+      r.endsAt = Math.max(Date.now(), r.endsAt + +d.d * 1000);
+      r.total = Math.max(r.total, Math.ceil((r.endsAt - Date.now()) / 1000));
+      if (r.endsAt > Date.now()) r.done = false;
+      persist(); tickRest();
+    },
+    restSkip: () => { if (db.active) { delete db.active.rest; persist(); } tickRest(); },
     pickEx: (d) => {
       const m = ui.modal;
       if (m.mode === "session") {
@@ -700,18 +834,66 @@
     },
     quickAdd: () => openModal({ type: "quickAdd" }),
     delLog: (d) => { db.foodLog = db.foodLog.filter((e) => e.id !== d.id); commit(); },
+    relogEntry: (d) => {
+      const e = db.foodLog.find((x) => x.id === d.id);
+      copyFood([e], Store.dayKey());
+      commit(); toast(`Logged ${e.name} again today`);
+    },
+    copyDayToToday: () => {
+      const list = db.foodLog.filter((e) => e.day === ui.foodDay), today = Store.dayKey();
+      if (!confirm(`Add ${list.length} entr${list.length === 1 ? "y" : "ies"} from ${dayLabel(ui.foodDay)} to today?`)) return;
+      copyFood(list, today);
+      ui.foodDay = today; commit(); toast(`Copied ${list.length} to today`);
+    },
+    copyPrevDay: () => {
+      const from = Store.shiftDay(ui.foodDay, -1), list = db.foodLog.filter((e) => e.day === from);
+      if (!confirm(`Add ${list.length} entr${list.length === 1 ? "y" : "ies"} from ${dayLabel(from)} to ${dayLabel(ui.foodDay)}?`)) return;
+      copyFood(list, ui.foodDay);
+      commit(); toast(`Copied ${list.length} entr${list.length === 1 ? "y" : "ies"}`);
+    },
     // history
     histMode: (d) => { ui.histMode = d.v; ui.histEx = null; render(); },
     histEx: (d) => { ui.histEx = d.id; render(); window.scrollTo(0, 0); },
     histBack: () => { ui.histEx = null; render(); },
     goAwards: () => { ui.tab = "awards"; sessionStorage.setItem("tab", ui.tab); render(); window.scrollTo(0, 0); },
     histExFromAwards: (d) => { ui.tab = "history"; ui.histMode = "exercise"; ui.histEx = d.id; sessionStorage.setItem("tab", ui.tab); render(); window.scrollTo(0, 0); },
+    editSession: (d) => {
+      ui.sessionDraft = JSON.parse(JSON.stringify(db.sessions.find((s) => s.id === d.id)));
+      openModal({ type: "sessionEdit" });
+    },
+    sRmSet: (d) => { ui.sessionDraft.entries[d.ei].sets.splice(+d.si, 1); renderModal(); },
+    sAddSet: (d) => {
+      const sets = ui.sessionDraft.entries[d.ei].sets, last = sets[sets.length - 1];
+      sets.push(last ? { ...last } : { w: null, r: null, done: true });
+      renderModal();
+    },
+    sRmEntry: (d) => { ui.sessionDraft.entries.splice(+d.ei, 1); renderModal(); },
+    saveSession: () => {
+      const d = ui.sessionDraft;
+      for (const e of d.entries) {
+        for (const [i, s] of e.sets.entries()) {
+          if (s.w == null || !(s.w >= 0) || !(s.r > 0)) return toast(`${exById(e.exerciseId)?.name || "Exercise"}, set ${i + 1}: enter weight (0 for bodyweight) and reps`);
+          s.r = Math.round(s.r); s.done = true;
+        }
+      }
+      d.entries = d.entries.filter((e) => e.sets.length);
+      if (!d.entries.length) {
+        if (!confirm("No sets left. Delete this workout?")) return;
+        db.sessions = db.sessions.filter((s) => s.id !== d.id);
+      } else {
+        db.sessions = db.sessions.map((s) => (s.id === d.id ? d : s));
+        db.sessions.sort((a, b) => a.date.localeCompare(b.date)); // the date may have changed; suggestions read the newest last
+      }
+      ui.modal = null; commit(); toast("Workout updated");
+    },
     delSession: (d) => {
       if (!confirm("Delete this workout from history?")) return;
       db.sessions = db.sessions.filter((s) => s.id !== d.id); commit();
     },
     // settings
     setUnit: (d) => { db.settings.unit = d.v; commit(); },
+    setRestOn: (d) => { db.settings.rest = { ...restCfg(), on: d.v === "1" }; commit(); },
+    setWake: (d) => { db.settings.wakeLock = d.v === "1"; commit(); },
     setTheme: (d) => { db.settings.theme = d.v; commit(); toast(`${T().icon} ${T().name} theme on`); },
     goTheme: () => { ui.tab = "settings"; sessionStorage.setItem("tab", ui.tab); render(); $("#themeCard")?.scrollIntoView(); },
     export: () => { db.settings.lastExport = new Date().toISOString(); persist(); Store.exportJSON(db); render(); },
@@ -756,6 +938,16 @@
       db.settings.goals[t.dataset.goal] = num(t.value) || 0;
       persist();
       $("#macroKcal").textContent = macroKcalText();
+    } else if (t.hasAttribute("data-restsec")) {
+      const sec = num(t.value);
+      if (sec > 0 && sec <= 900) { db.settings.rest = { ...restCfg(), sec: Math.round(sec) }; persist(); }
+    } else if (t.dataset.sbind) {
+      const s = ui.sessionDraft.entries[t.dataset.ei]?.sets[t.dataset.si];
+      if (s) s[t.dataset.sbind] = num(t.value);
+    } else if (t.hasAttribute("data-sdate")) {
+      if (!t.value) return;
+      const [y, m, d] = t.value.split("-").map(Number), old = new Date(ui.sessionDraft.date);
+      ui.sessionDraft.date = new Date(y, m - 1, d, old.getHours(), old.getMinutes()).toISOString();
     } else if (t.hasAttribute("data-qty")) {
       const f = foodById(ui.modal.foodId);
       $("#live").innerHTML = macroLine(scaleFood(f, num(t.value) || 0));
@@ -794,6 +986,7 @@
 
   // Reset the food day when the app is reopened on a new day.
   document.addEventListener("visibilitychange", () => {
+    syncWakeLock(); // the browser drops the screen lock whenever the app is hidden
     if (document.visibilityState === "visible" && !ui.modal) {
       const today = Store.dayKey();
       if (ui.foodDay > today) ui.foodDay = today;

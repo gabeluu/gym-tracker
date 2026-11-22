@@ -59,8 +59,9 @@ Looking at the **last finished session** that included the exercise (completed s
 
 1. **Every** target set at the top weight reached `repMax` → **add `inc`**, all sets target `repMin`.
 2. Otherwise → **same weight**, each set targets last time's reps **+1** (capped at `repMax`).
-3. Best set below `repMin` → same targets, plus a "consider dropping weight" hint.
-4. No history → no weight suggestion; target reps = `repMin`.
+3. Best set below `repMin` → same targets, plus a "Hold" hint.
+4. Below `repMin` at the **same weight two sessions in a row** → **Deload**: ~10% lighter (nearest step, always at least one step down), all sets target `repMin`.
+5. No history → no weight suggestion; target reps = `repMin`.
 
 The suggestion pre-fills the set inputs, and you can overwrite anything.
 Also tracked per exercise: heaviest weight, best estimated 1RM (Epley: `w × (1 + r/30)`), and an e1RM trend chart.
@@ -81,10 +82,15 @@ Finishing a workout diffs before/after and shows a sheet with unlocks, level-ups
 Start from a routine (pre-loads its exercises) **or** start empty. Add or remove exercises at any time.
 Each exercise card shows: *Last time* → *Today's target* → set rows (weight, reps, ✓).
 The in-progress session is saved on every change, so closing the app loses nothing.
+- **Swap**: exercises with substitutes (built-in swap groups) show "⇄ Swap for …" chips. Swapping replaces the card with the substitute's own targets; logged sets on the old one are dropped after a confirm.
+- **Rest timer**: ticking ✓ starts a countdown (`settings.rest = { on, sec }`, default 90 s; per-exercise `rest` overrides, 0 = none). It lives on `active.rest = { endsAt, total, done }`, so it survives reloads. At zero it vibrates (Android only; iOS has no vibration API) and beeps. It hides 30 s after ending. Timers can't fire while the phone is locked, which is why the screen lock exists.
+- **Screen lock**: `navigator.wakeLock` keeps the screen on while a workout is active (`settings.wakeLock`, default on). It's re-requested whenever the app becomes visible.
+- **Edit a finished workout** (History → Sessions → Edit): date, weights, reps, add/remove sets or exercises. It works on a draft copy, and Save validates it and re-sorts sessions by date. Awards and levels recompute on their own.
 
 ## Food flow (manual + saved foods)
 Day view: totals vs goals (kcal/P/C/F bars) and a list of entries.
 Add = search saved foods (most recent first) → quantity → log. Or create a new food (saved for reuse), or quick-add raw numbers.
+Re-logging: "Copy yesterday / previous day" fills the viewed day; on a past day, "Copy this day to today" and a per-entry ↻ (log again today). Copies are new entries with the same macro snapshot.
 
 ## Out of scope (on purpose)
-Accounts, sync, food database or barcode lookup, rest timers, plate math, charts beyond a sparkline.
+Accounts, sync, food database or barcode lookup, plate math, charts beyond a sparkline.

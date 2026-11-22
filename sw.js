@@ -1,5 +1,5 @@
 // Offline cache for the app shell. Bump VERSION after changing any file so phones pick up the update.
-const VERSION = "gym-v3";
+const VERSION = "gym-v4";
 const FILES = [
   "./", "index.html", "styles.css", "manifest.webmanifest",
   "js/store.js", "js/progression.js", "js/baseline.js", "js/achievements.js", "js/themes.js", "js/app.js",

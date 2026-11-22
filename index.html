@@ -18,6 +18,13 @@
   <main id="view"></main>
   <div id="modal" hidden></div>
   <div id="toast" role="status" aria-live="polite"></div>
+  <div id="restbar" hidden role="timer" aria-live="off">
+    <div id="restFill"></div>
+    <div class="rest-txt"><b id="restTime">0:00</b><span id="restLabel">Rest</span></div>
+    <button class="btn sm" data-act="restAdj" data-d="-15">−15</button>
+    <button class="btn sm" data-act="restAdj" data-d="15">+15</button>
+    <button class="btn sm" data-act="restSkip">Skip</button>
+  </div>
   <nav class="tabbar">
     <button data-tab="workout"><span>🏋️</span>Workout</button>
     <button data-tab="food"><span>🍽️</span>Food</button>

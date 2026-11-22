@@ -165,6 +165,35 @@ label.btn { flex-direction: row; font-size: 1rem; color: var(--text); }
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+/* QoL: swap chips, deload, rest timer, small helpers */
+.wrap { flex-wrap: wrap; }
+.swap { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.chip {
+  background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 99px;
+  padding: 5px 10px; font: inherit; font-size: .85rem; cursor: pointer;
+}
+.chip:active { transform: scale(.97); }
+.target.deload { background: color-mix(in srgb, var(--warn) 14%, var(--card2)); }
+.target.deload .label { color: var(--warn); }
+.seg.compact { margin: 0; flex: none; }
+.seg.compact button { padding: 6px 12px; }
+.rest-hint { align-self: end; padding-bottom: 6px; }
+#restbar {
+  position: fixed; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 16px)); z-index: 11;
+  bottom: calc(66px + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 6px;
+  background: var(--card2); border: 1px solid var(--line); border-radius: 14px; padding: 8px 8px 8px 14px; overflow: hidden;
+}
+#restbar[hidden] { display: none; }
+#restFill { position: absolute; inset: 0 auto 0 0; width: 0; background: color-mix(in srgb, var(--blue) 18%, transparent); transition: width .25s linear; pointer-events: none; }
+#restbar.over { border-color: var(--accent); }
+#restbar.over #restFill { background: color-mix(in srgb, var(--accent) 22%, transparent); width: 100% !important; }
+.rest-txt { position: relative; flex: 1; display: flex; flex-direction: column; line-height: 1.15; }
+.rest-txt b { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+.rest-txt span { font-size: .75rem; color: var(--muted); }
+#restbar .btn { position: relative; padding: 8px 10px; }
+body.resting main { padding-bottom: calc(150px + env(safe-area-inset-bottom)); }
+body.resting #toast { bottom: calc(144px + env(safe-area-inset-bottom)); }
+
 /* awards */
 .lvl {
   display: inline-block; font-size: .7rem; font-weight: 800; color: var(--accent-ink); background: var(--accent);
