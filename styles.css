@@ -194,6 +194,17 @@ label.btn { flex-direction: row; font-size: 1rem; color: var(--text); }
 body.resting main { padding-bottom: calc(150px + env(safe-area-inset-bottom)); }
 body.resting #toast { bottom: calc(144px + env(safe-area-inset-bottom)); }
 
+/* cardio rows, ranks, body stats */
+.set.cardio { grid-template-columns: 28px 1fr 1fr 1fr 48px; }
+.set.cardio.w4 { grid-template-columns: 24px 1fr 1fr 1fr 1fr 44px; gap: 6px; }
+.set.cardio input { padding: 10px 2px; }
+.bar.rk i { background: linear-gradient(90deg, var(--blue), var(--accent)); }
+.rank-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 6px 0 10px; }
+.rank-hero .tier { font-size: .8rem; padding: 3px 10px; }
+.stats div span.small { color: var(--muted); }
+details summary { cursor: pointer; padding: 4px 0; }
+details p { margin: 6px 0; }
+
 /* awards */
 .lvl {
   display: inline-block; font-size: .7rem; font-weight: 800; color: var(--accent-ink); background: var(--accent);

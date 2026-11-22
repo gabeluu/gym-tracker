@@ -12,6 +12,7 @@
       active: null,
       foods: [],
       foodLog: [],
+      weighIns: [], // [{ day: "YYYY-MM-DD", kg }] sorted by day; ranks use the weight you had on each workout day
     };
   }
 

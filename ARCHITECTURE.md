@@ -16,6 +16,8 @@ styles.css            mobile-first dark UI
 js/store.js           load/save/export/import, ids, date helpers
 js/progression.js     double-progression + PR/e1RM math (pure functions)
 js/baseline.js        built-in exercise library + substitute groups + idempotent seed
+js/standards.js       real-world data (Strength Level, Running Level, Coggan) + percentile math
+js/ranks.js           per-exercise real-world rank from history + body profile (best ever, never drops)
 js/achievements.js    achievements, feats, per-exercise levels (pure functions, derived from history)
 js/themes.js          progression themes: names, icons, tier names/colors, wording (no mechanics)
 js/app.js             views (Workout / Food / History / Settings) + event handling
@@ -65,6 +67,27 @@ Looking at the **last finished session** that included the exercise (completed s
 
 The suggestion pre-fills the set inputs, and you can overwrite anything.
 Also tracked per exercise: heaviest weight, best estimated 1RM (Epley: `w × (1 + r/30)`), and an e1RM trend chart.
+
+## Cardio
+Cardio exercises have `kind: "cardio"`, a `cardio` type (run / bike / walk / stairs / elliptical / other), `durMin`/`durMax` (minutes), `intLabel` (km/h, level, incline %…) and `intStep`.
+A bout is `{ min, int, km, watts }`. Running distance is derived from speed × time when km is blank.
+**Cardio double progression** (`Progression.suggestCardio`): each session ~10% longer at the same intensity, up to `durMax`. Then intensity goes up by `intStep` and duration drops back to `durMin`.
+PRs and relative levels use `Progression.cardioScore`: 5K-equivalent speed for runs, minutes × intensity for everything else.
+Built-ins: Treadmill Run, Stationary Bike, Incline Treadmill Walk, Stair Climber, Elliptical. They form one swap group.
+
+## Real-world ranks (`js/standards.js`, `js/ranks.js`)
+Tiers mean "better than X% of real people", with the theme naming them: tier 1 everyone, 2 top 80%, 3 top 50%, 4 top 20%, 5 top 5%, 6 top 1%.
+- **Lifts**: Strength Level standards (5th/20th/50th/80th/95th percentile of ~46M logged lifts), stored as a few bodyweight rows per lift and sex. Between rows: log-log interpolation. Between percentiles: linear in z (normal) units, extrapolated above the 95th. Units are kg 1RM (Epley from sets ≤15 reps), kg of ONE dumbbell, or bodyweight reps. Built-ins map to a standard in `baseline.js` (`STD`); custom strength exercises can pick one ("rank as…").
+- **Running**: Running Level 5K times by age and sex, same percentiles. Any run ≥1.6 km becomes a 5K-equivalent time via Riegel (`t × (5/d)^1.06`).
+- **Bike**: no reliable percentile data, so FTP (avg watts of a ≥20 min ride × 0.95) ÷ bodyweight is graded on Allen & Coggan's categories (Untrained → Superior = tiers 1–5).
+- Walk / stairs / elliptical: no standard, so no rank. They still get progression, levels, PRs and badges.
+- **Never goes down**: a rank is the best result ever, judged at the bodyweight on that workout day (`weighIns`). Overall strength = mean percentile of your best 3 lifts, so a new weak lift can't lower it. Missing exercises or weeks costs nothing; only the streak counter resets.
+- Strength Level users are gym-goers who log lifts, so percentiles compare you to them, not to everyone. The Awards page says so.
+
+## Body stats (`settings.profile`, `weighIns`)
+`profile = { sex, born, heightCm, activity, goal }` (birth year, so age stays current), and `weighIns = [{ day, kg }]`. Saving the body sheet logs today's weigh-in.
+Calculator: BMI (WHO bands); BMR via Mifflin-St Jeor; × activity factor (1.2–1.9) = maintenance; goal ±275/550 kcal (≈0.25/0.5 kg/week); floor max(BMR, 1500 m / 1200 f).
+Macros: protein 1.8 g/kg (BMI-25 weight if BMI ≥ 30), fat ≥ 25% of kcal (min 0.6 g/kg), carbs the rest. "Use as my daily goals" writes `settings.goals`.
 
 ## Achievements (`js/achievements.js`)
 Computed from finished sessions every time, never stored, so they work retroactively and survive export/import.

@@ -34,19 +34,43 @@
       primary: ["biceps"], secondary: [], pattern: "elbow flexion", equipment: "machine", repMin: 10, repMax: 15, inc: 2.5 },
     { id: "bl-standing-calf-raise", tier: "accessory", name: "Standing Calf Raise", name_ro: "Ridicări pe vârfuri din stând, la aparat",
       primary: ["calves"], secondary: [], pattern: "ankle extension", equipment: "machine", repMin: 10, repMax: 15, inc: 5 },
+
+    // ---- cardio (progression: duration first, then intensity) ----
+    { id: "bl-treadmill-run", tier: "cardio", kind: "cardio", cardio: "run", name: "Treadmill Run", name_ro: "Alergare pe bandă",
+      primary: ["heart & lungs"], secondary: ["legs"], pattern: "running", equipment: "treadmill", durMin: 20, durMax: 40, intLabel: "km/h", intStep: 0.5 },
+    { id: "bl-stationary-bike", tier: "cardio", kind: "cardio", cardio: "bike", name: "Stationary Bike", name_ro: "Bicicletă staționară",
+      primary: ["heart & lungs"], secondary: ["quads"], pattern: "cycling", equipment: "stationary bike", durMin: 20, durMax: 45, intLabel: "level", intStep: 1 },
+    { id: "bl-incline-walk", tier: "cardio", kind: "cardio", cardio: "walk", name: "Incline Treadmill Walk", name_ro: "Mers în pantă pe bandă",
+      primary: ["heart & lungs"], secondary: ["glutes", "calves"], pattern: "walking", equipment: "treadmill", durMin: 20, durMax: 45, intLabel: "incline %", intStep: 1 },
+    { id: "bl-stair-climber", tier: "cardio", kind: "cardio", cardio: "stairs", name: "Stair Climber", name_ro: "Simulator de scări (stepper)",
+      primary: ["heart & lungs"], secondary: ["glutes", "quads"], pattern: "climbing", equipment: "stair machine", durMin: 10, durMax: 30, intLabel: "level", intStep: 1 },
+    { id: "bl-elliptical", tier: "cardio", kind: "cardio", cardio: "elliptical", name: "Elliptical", name_ro: "Bicicletă eliptică",
+      primary: ["heart & lungs"], secondary: ["full body"], pattern: "elliptical", equipment: "elliptical trainer", durMin: 20, durMax: 40, intLabel: "level", intStep: 1 },
   ];
+
+  // Which real-world standard (js/standards.js) each built-in exercise is ranked against.
+  // Preacher machine → "Machine Bicep Curl" is the closest standard available (an approximation).
+  // Running and bike ranks come from the cardio data, not this map; walk/stairs/elliptical have no real-world standard.
+  const STD = {
+    "bl-machine-chest-press": "chest-press", "bl-lat-pulldown": "lat-pulldown", "bl-45-back-extension": "back-extension",
+    "bl-seated-leg-curl": "seated-leg-curl", "bl-seated-db-shoulder-press": "dumbbell-shoulder-press", "bl-goblet-squat": "goblet-squat",
+    "bl-hack-squat": "hack-squat", "bl-leg-press": "sled-leg-press", "bl-chest-supported-row": "machine-row",
+    "bl-incline-db-curl": "incline-dumbbell-curl", "bl-standing-db-curl": "dumbbell-curl", "bl-machine-preacher-curl": "machine-bicep-curl",
+    "bl-standing-calf-raise": "machine-calf-raise",
+  };
 
   // Exercises in the same group can replace each other. Listed by id.
   const SUBSTITUTE_GROUPS = {
     quads: ["bl-goblet-squat", "bl-hack-squat", "bl-leg-press"],
     biceps: ["bl-incline-db-curl", "bl-standing-db-curl", "bl-machine-preacher-curl"],
     back: ["bl-lat-pulldown", "bl-chest-supported-row"],
+    cardio: ["bl-treadmill-run", "bl-stationary-bike", "bl-incline-walk", "bl-stair-climber", "bl-elliptical"],
   };
 
   const DEFAULT_SETS = 3;
   // Fields owned by the library: refreshed on every seed so edits to this file reach existing users.
-  // Everything else (name, repMin, repMax, sets, inc) belongs to the user once seeded and is never overwritten.
-  const CATALOG_FIELDS = ["is_baseline", "name_ro", "tier", "primary", "secondary", "pattern", "equipment", "substitutes"];
+  // Everything else (name, reps, sets, step, durations, intensity) belongs to the user once seeded and is never overwritten.
+  const CATALOG_FIELDS = ["is_baseline", "name_ro", "tier", "primary", "secondary", "pattern", "equipment", "substitutes", "std", "kind", "cardio"];
 
   const lbStep = (kg) => Math.max(2.5, Math.round((kg * 2) / 2.5) * 2.5);
   const norm = (s) => String(s || "").trim().toLowerCase();
@@ -74,10 +98,9 @@
 
     for (const b of EXERCISES) {
       if (ids.has(b.id) || ownNames.has(norm(b.name))) continue;
-      db.exercises.push({
-        id: b.id, name: b.name, repMin: b.repMin, repMax: b.repMax, sets: DEFAULT_SETS,
-        inc: unit === "lb" ? lbStep(b.inc) : b.inc,
-      });
+      db.exercises.push(b.kind === "cardio"
+        ? { id: b.id, name: b.name, durMin: b.durMin, durMax: b.durMax, intLabel: b.intLabel, intStep: b.intStep }
+        : { id: b.id, name: b.name, repMin: b.repMin, repMax: b.repMax, sets: DEFAULT_SETS, inc: unit === "lb" ? lbStep(b.inc) : b.inc });
       ids.add(b.id);
       changed = true;
     }
@@ -88,6 +111,7 @@
       const catalog = {
         is_baseline: true, name_ro: b.name_ro, tier: b.tier, primary: b.primary, secondary: b.secondary,
         pattern: b.pattern, equipment: b.equipment, substitutes: substitutesFor(b.id).filter((id) => ids.has(id)),
+        std: STD[b.id], kind: b.kind, cardio: b.cardio,
       };
       const current = JSON.stringify(CATALOG_FIELDS.map((k) => ex[k]));
       if (current !== JSON.stringify(CATALOG_FIELDS.map((k) => catalog[k]))) {

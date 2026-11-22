@@ -63,7 +63,7 @@
     // What the next level needs, in the units of the active series.
     const s = st.series === "w" ? st.w : st.bw;
     const need = s.first * (1 + LEVEL_STEP * st.level);
-    st.next = st.series === "w" ? { e1rm: need } : st.series === "bw" ? { reps: Math.ceil(30 * (need - 1) - 1e-9) } : null;
+    st.next = st.cardio ? { cardio: true } : st.series === "w" ? { e1rm: need } : st.series === "bw" ? { reps: Math.ceil(30 * (need - 1) - 1e-9) } : null;
     st.levelProgress = Math.min(1, Math.max(0, (st.gain - LEVEL_STEP * (st.level - 1)) / LEVEL_STEP));
     return st;
   }
@@ -86,6 +86,32 @@
     for (const s of sessions) {
       let counted = false, sessionPRs = 0;
       for (const e of s.entries) {
+        const def0 = exDefs.get(e.exerciseId);
+        if (def0 && def0.kind === "cardio") {
+          // Cardio: score = P.cardioScore (5K-equivalent speed for runs, minutes × intensity otherwise).
+          const bouts = P.doneCardio(e);
+          if (!bouts.length) continue;
+          counted = true;
+          stats.sets += bouts.length;
+          let st = ex.get(e.exerciseId);
+          if (!st) ex.set(e.exerciseId, (st = newExStat(e.exerciseId)));
+          st.cardio = true;
+          const best = Math.max(...bouts.map((b) => P.cardioScore(def0, b)));
+          const topInt = Math.max(0, ...bouts.map((b) => b.int || 0));
+          let pr = false;
+          if (best > 0) {
+            if (!st.w.first) st.w.first = best;
+            else if (best > st.w.best + EPS) pr = true;
+            st.w.best = Math.max(st.w.best, best);
+          }
+          if (st.sessions && topInt > st.w.maxW + EPS) { st.weightUps++; stats.weightUps++; } // harder setting = "heavier"
+          st.w.maxW = Math.max(st.w.maxW, topInt);
+          if (pr) { st.prs++; stats.prs++; sessionPRs++; }
+          if (def0.durMax && bouts.some((b) => b.min >= def0.durMax)) { st.clears++; stats.clears++; } // top of the duration range
+          st.sessions++;
+          if (st.sessions >= 20) feats.add("loyal");
+          continue;
+        }
         const done = P.doneSets(e);
         if (!done.length) continue;
         counted = true;

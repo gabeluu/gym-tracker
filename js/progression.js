@@ -13,13 +13,19 @@
     return (entry && entry.sets ? entry.sets : []).filter((s) => s.done && s.r > 0 && s.w >= 0);
   }
 
+  // Completed cardio bouts: { min, int (speed/level/incline…), km, watts }.
+  function doneCardio(entry) {
+    return (entry && entry.sets ? entry.sets : []).filter((s) => s.done && s.min > 0);
+  }
+  const hasDone = (e) => !!e && (doneSets(e).length > 0 || doneCardio(e).length > 0);
+
   // Most recent finished session entry for an exercise (sessions sorted oldest→newest).
   function lastEntry(sessions, exerciseId, excludeSessionId) {
     for (let i = sessions.length - 1; i >= 0; i--) {
       const s = sessions[i];
       if (s.id === excludeSessionId) continue;
       const e = s.entries.find((x) => x.exerciseId === exerciseId);
-      if (e && doneSets(e).length) return { session: s, entry: e };
+      if (hasDone(e)) return { session: s, entry: e };
     }
     return null;
   }
@@ -29,9 +35,48 @@
     const out = [];
     for (let i = sessions.length - 1; i >= 0 && out.length < n; i--) {
       const e = sessions[i].entries.find((x) => x.exerciseId === exerciseId);
-      if (e && doneSets(e).length) out.push({ session: sessions[i], entry: e });
+      if (hasDone(e)) out.push({ session: sessions[i], entry: e });
     }
     return out;
+  }
+
+  // ---------- cardio ----------
+  // Distance of a bout: logged km, or for running derived from treadmill speed (km/h) × time.
+  function cardioKm(ex, s) {
+    if (s.km > 0) return s.km;
+    if (ex.cardio === "run" && s.int > 0 && s.min > 0) return round((s.int * s.min) / 60);
+    return null;
+  }
+  /**
+   * One number per bout for "did I improve?" (PRs, relative levels). Only compared within one exercise.
+   * Running: 5K-equivalent speed (Riegel), so faster OR longer-at-pace both count. Everything else:
+   * minutes × intensity ("work"), so going longer or harder both count.
+   */
+  function cardioScore(ex, s) {
+    if (!(s.min > 0)) return 0;
+    if (ex.cardio === "run") {
+      const km = cardioKm(ex, s);
+      return km >= 1 ? 5 / ((s.min / 60) * Math.pow(5 / km, 1.06)) : 0;
+    }
+    return s.min * (s.int > 0 ? s.int : 1);
+  }
+  /**
+   * Cardio double progression: build duration ~10% per session up to durMax at the same intensity;
+   * once you reach durMax, raise intensity by intStep and drop back to durMin.
+   * ex: { durMin, durMax, intStep, intLabel }. last: completed bouts from the previous session.
+   */
+  function suggestCardio(ex, last) {
+    const lo = ex.durMin || 20, hi = ex.durMax || 40, step = ex.intStep || 1, label = ex.intLabel || "level";
+    if (!last || !last.length) {
+      return { status: "new", note: `First time: ${lo}–${hi} min at an effort you could still talk at.`, targets: [{ min: lo, int: null }] };
+    }
+    const top = last.reduce((a, s) => (s.min > a.min ? s : a));
+    if (top.min >= hi) {
+      const int = top.int != null ? round(top.int + step) : null;
+      return { status: "increase", note: `Did ${hi}+ min last time → ${int != null ? `${label} ${top.int} → ${int}` : "go a bit harder"}, back to ${lo} min.`, targets: [{ min: lo, int }] };
+    }
+    const min = Math.min(hi, Math.max(top.min + 1, Math.round(top.min * 1.1)));
+    return { status: "build", note: `Same ${label}, ~10% longer (${top.min} → ${min} min).`, targets: [{ min, int: top.int ?? null }] };
   }
 
   // Top weight and best reps at that weight for a list of completed sets.
@@ -118,5 +163,5 @@
     return { maxW, maxE: round(maxE), history };
   }
 
-  window.Progression = { e1rm, suggest, lastEntry, recentEntries, records, doneSets };
+  window.Progression = { e1rm, suggest, lastEntry, recentEntries, records, doneSets, doneCardio, hasDone, cardioKm, cardioScore, suggestCardio };
 })();
