@@ -2,6 +2,7 @@
 (function () {
   const $ = (s, r = document) => r.querySelector(s);
   let db = Store.load();
+  if (Baseline.seed(db)) Store.save(db); // idempotent: only adds/refreshes built-in exercises
   const ui = {
     tab: sessionStorage.getItem("tab") || "workout",
     foodDay: Store.dayKey(),
@@ -24,6 +25,11 @@
   const exById = (id) => db.exercises.find((e) => e.id === id);
   const foodById = (id) => db.foods.find((f) => f.id === id);
   const sortedExercises = () => [...db.exercises].sort((a, b) => a.name.localeCompare(b.name));
+  // Lowercase + strip diacritics, so "tractiuni" matches "Tracțiuni".
+  const fold = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const exMatches = (e, q) => fold(e.name).includes(q) || fold(e.name_ro).includes(q);
+  const builtIn = (e) => (e.is_baseline ? ` <span class="badge">Built-in</span>` : "");
+  const roLine = (e) => (e.name_ro ? `<div class="muted small ro">${esc(e.name_ro)}</div>` : "");
   const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   const fmtTime = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
@@ -132,9 +138,9 @@
     h += `</section>`;
 
     h += `<section class="card"><div class="row-between"><h2>Exercises</h2><button class="btn sm" data-act="newExercise">+ New</button></div>`;
-    if (!db.exercises.length) h += `<p class="muted">No exercises yet.</p><button class="btn" data-act="seedExercises">Add starter exercises</button>`;
+    if (!db.exercises.length) h += `<p class="muted">No exercises yet.</p>`;
     for (const e of sortedExercises()) {
-      h += `<div class="list-item" data-act="editExercise" data-id="${e.id}"><div><b>${esc(e.name)}</b><div class="muted small">${e.sets}×${e.repMin}–${e.repMax} · +${fmt(e.inc)} ${unit()}</div></div><span class="chev">›</span></div>`;
+      h += `<div class="list-item" data-act="editExercise" data-id="${e.id}"><div><b>${esc(e.name)}</b>${builtIn(e)}${roLine(e)}<div class="muted small">${e.sets}×${e.repMin}–${e.repMax} · +${fmt(e.inc)} ${unit()}</div></div><span class="chev">›</span></div>`;
     }
     h += `</section>`;
     return h;
@@ -314,14 +320,26 @@
 
   function exPickerList() {
     const m = ui.modal;
-    const q = m.q.trim().toLowerCase();
+    const q = fold(m.q.trim());
     const taken = m.mode === "session" ? db.active.entries.map((e) => e.exerciseId) : ui.routineDraft.exerciseIds;
-    const list = sortedExercises().filter((e) => e.name.toLowerCase().includes(q));
+    const list = sortedExercises().filter((e) => exMatches(e, q));
     let h = "";
-    if (q && !db.exercises.some((e) => e.name.toLowerCase() === q)) h += `<button class="btn primary big" data-act="createExFromPicker">+ Create “${esc(m.q.trim())}”</button>`;
-    h += list.map((e) => `<div class="list-item" data-act="pickEx" data-id="${e.id}"><div><b>${esc(e.name)}</b><div class="muted small">${e.sets}×${e.repMin}–${e.repMax}</div></div>${taken.includes(e.id) ? `<span class="muted small">added</span>` : `<span class="chev">+</span>`}</div>`).join("");
+    if (q && !db.exercises.some((e) => fold(e.name) === q || fold(e.name_ro) === q)) h += `<button class="btn primary big" data-act="createExFromPicker">+ Create “${esc(m.q.trim())}”</button>`;
+    h += list.map((e) => `<div class="list-item" data-act="pickEx" data-id="${e.id}"><div><b>${esc(e.name)}</b>${builtIn(e)}${roLine(e)}<div class="muted small">${e.sets}×${e.repMin}–${e.repMax}</div></div>${taken.includes(e.id) ? `<span class="muted small">added</span>` : `<span class="chev">+</span>`}</div>`).join("");
     if (!db.exercises.length && !q) h += `<p class="muted">No exercises yet. Type a name to create one.</p>`;
     return h;
+  }
+
+  function baselineInfo(e) {
+    const muscles = [...e.primary, ...e.secondary.map((x) => `${x} (secondary)`)].join(", ");
+    const subs = (e.substitutes || []).map((id) => exById(id)?.name).filter(Boolean);
+    return `<div class="info small">
+      <div><span class="badge">Built-in</span> <span class="muted">${esc(e.tier)} · can't be deleted</span></div>
+      <div><span class="muted">Romanian:</span> ${esc(e.name_ro)}</div>
+      <div><span class="muted">Muscles:</span> ${esc(muscles)}</div>
+      <div><span class="muted">Pattern:</span> ${esc(e.pattern)} · <span class="muted">Equipment:</span> ${esc(e.equipment)}</div>
+      ${subs.length ? `<div><span class="muted">Can swap with:</span> ${subs.map(esc).join(", ")}</div>` : ""}
+    </div>`;
   }
 
   function lastUsedFoods() {
@@ -359,8 +377,9 @@
           <div class="grid2"><label>Min reps<input name="repMin" inputmode="numeric" value="${e.repMin}"></label><label>Max reps<input name="repMax" inputmode="numeric" value="${e.repMax}"></label></div>
           <div class="grid2"><label>Sets<input name="sets" inputmode="numeric" value="${e.sets}"></label><label>Weight step (${unit()})<input name="inc" inputmode="decimal" value="${fmt(e.inc)}"></label></div>
           <p class="muted small">Double progression: once you hit <b>max reps on every set</b>, the target weight goes up by the step and reps reset to min.</p>
+          ${e.is_baseline ? baselineInfo(e) : ""}
           <button class="btn primary big" type="submit">Save</button>
-          ${m.id ? `<button type="button" class="btn danger" data-act="deleteExercise" data-id="${m.id}">Delete exercise</button>` : ""}
+          ${m.id && !e.is_baseline ? `<button type="button" class="btn danger" data-act="deleteExercise" data-id="${m.id}">Delete exercise</button>` : ""}
         </form>`,
       };
     },
@@ -469,13 +488,6 @@
   };
 
   // ---------- actions ----------
-  const STARTER = [
-    ["Bench Press", 6, 10, 2.5], ["Incline Dumbbell Press", 8, 12, 2], ["Overhead Press", 6, 10, 2.5], ["Lateral Raise", 12, 20, 1],
-    ["Tricep Pushdown", 10, 15, 2.5], ["Squat", 5, 8, 2.5], ["Romanian Deadlift", 8, 12, 2.5], ["Leg Press", 10, 15, 5],
-    ["Leg Curl", 10, 15, 2.5], ["Deadlift", 3, 6, 5], ["Barbell Row", 6, 10, 2.5], ["Pull-up", 6, 12, 2.5],
-    ["Lat Pulldown", 8, 12, 2.5], ["Seated Cable Row", 8, 12, 2.5], ["Bicep Curl", 8, 12, 1], ["Calf Raise", 10, 15, 5],
-  ];
-
   const ACTIONS = {
     closeModal,
     // workout
@@ -519,6 +531,7 @@
     newExercise: () => openModal({ type: "exForm" }),
     editExercise: (d) => openModal({ type: "exForm", id: d.id }),
     deleteExercise: (d) => {
+      if (exById(d.id)?.is_baseline) return toast("Built-in exercises can't be deleted.");
       if (db.sessions.some((s) => s.entries.some((e) => e.exerciseId === d.id)) || db.active?.entries.some((e) => e.exerciseId === d.id)) {
         return toast("This exercise has logged history. Rename it instead.");
       }
@@ -526,13 +539,6 @@
       db.exercises = db.exercises.filter((e) => e.id !== d.id);
       db.routines.forEach((r) => (r.exerciseIds = r.exerciseIds.filter((x) => x !== d.id)));
       closeModal(); commit();
-    },
-    seedExercises: () => {
-      const lb = unit() === "lb";
-      for (const [name, repMin, repMax, inc] of STARTER) {
-        db.exercises.push({ id: Store.uid(), name, repMin, repMax, sets: 3, inc: lb ? Math.max(2.5, Math.round((inc * 2) / 2.5) * 2.5) : inc });
-      }
-      commit(); toast("Added starter exercises. Tap any one to tweak it.");
     },
     // routines
     newRoutine: () => { ui.routineDraft = { name: "", exerciseIds: [] }; openModal({ type: "routineForm" }); },
@@ -585,7 +591,7 @@
     resetAll: () => {
       if (!confirm("Erase ALL workouts, foods and settings on this device?")) return;
       if (!confirm("Really? This can't be undone unless you have a backup.")) return;
-      db = Store.defaults(); commit();
+      db = Store.defaults(); Baseline.seed(db); commit();
     },
   };
 
@@ -650,6 +656,7 @@
     try {
       const data = Store.parseImport(await file.text());
       if (!confirm(`Replace everything on this device with this backup (${data.sessions.length} workouts, ${data.foodLog.length} food entries)?`)) return;
+      Baseline.seed(data); // older backups get the built-in library too
       db = data; commit(); toast("Backup restored");
     } catch (e) {
       alert("Import failed: " + e.message);
