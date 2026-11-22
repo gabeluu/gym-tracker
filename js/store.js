@@ -5,7 +5,7 @@
   function defaults() {
     return {
       version: 1,
-      settings: { unit: "kg", goals: { kcal: 2500, p: 180, c: 250, f: 80 } },
+      settings: { unit: "kg", theme: "iron-classic", goals: { kcal: 2500, p: 180, c: 250, f: 80 } },
       exercises: [],
       routines: [],
       sessions: [],

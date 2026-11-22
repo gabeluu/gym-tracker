@@ -100,17 +100,23 @@
       if (best > rec.maxE + 0.01 || top > rec.maxW) prs.push(exById(e.exerciseId)?.name);
     }
     const nSets = entries.reduce((n, e) => n + e.sets.length, 0);
+    const before = Achievements.compute(db);
     db.sessions.push({ ...a, entries, finishedAt: new Date().toISOString() });
     db.active = null;
+    const { unlocked, levelUps } = Achievements.diff(before, Achievements.compute(db));
     commit();
     window.scrollTo(0, 0);
-    toast(`Saved: ${entries.length} exercise${entries.length === 1 ? "" : "s"}, ${nSets} sets.` + (prs.length ? ` 🏆 PR: ${prs.join(", ")}` : ""));
+    const summary = `${entries.length} exercise${entries.length === 1 ? "" : "s"}, ${nSets} sets`;
+    if (prs.length || unlocked.length || levelUps.length) openModal({ type: "celebrate", summary, prs, unlocked, levelUps });
+    else toast(`Saved: ${summary}.`);
   }
 
   // ---------- views ----------
   function render() {
     document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.tab === ui.tab));
-    const views = { workout: viewWorkout, food: viewFood, history: viewHistory, settings: viewSettings };
+    const tabT = TX().tab, awardsTab = $('.tabbar [data-tab="awards"]');
+    if (awardsTab) awardsTab.innerHTML = `<span>${tabT.icon}</span>${esc(tabT.label)}`;
+    const views = { workout: viewWorkout, food: viewFood, history: viewHistory, awards: viewAwards, settings: viewSettings };
     $("#view").innerHTML = views[ui.tab]();
     renderModal();
   }
@@ -129,6 +135,7 @@
       h += `<p class="muted small mt">Last: ${esc(rn)} · ${fmtDate(last.date)} · ${n} sets</p>`;
     }
     h += `</section>`;
+    h += homeGoals();
 
     h += `<section class="card"><div class="row-between"><h2>Routines</h2><button class="btn sm" data-act="newRoutine">+ New</button></div>`;
     if (!db.routines.length) h += `<p class="muted">No routines yet. Make one like “Push” or “Upper A” so its exercises load automatically.</p>`;
@@ -172,7 +179,7 @@
     const rec = Progression.records(db.sessions, ex.id);
     const done = en.sets.filter((s) => s.done).length;
     let h = `<section class="card ex ${en.sets.length && done === en.sets.length ? "complete" : ""}">
-      <div class="row-between"><h2>${esc(ex.name)}</h2><button class="icon" data-act="removeEntry" data-ei="${ei}" aria-label="Remove exercise">✕</button></div>
+      <div class="row-between"><h2>${esc(ex.name)}${lvlBadge(ex.id)}</h2><button class="icon" data-act="removeEntry" data-ei="${ei}" aria-label="Remove exercise">✕</button></div>
       <div class="muted small">${ex.sets}×${ex.repMin}–${ex.repMax} · +${fmt(ex.inc)} ${unit()}${rec.maxE ? ` · best e1RM ${fmt(Math.round(rec.maxE * 10) / 10)}` : ""}</div>`;
     if (last) h += `<div class="last"><span class="label">Last · ${fmtDate(last.session.date)}</span>${lastSets.map((s) => `${fmt(s.w)}×${s.r}`).join(", ")}</div>`;
     h += `<div class="target ${sug.status}"><span class="label">${STATUS[sug.status]}</span>${targetText(sug.targets)}<div class="small note">${esc(sug.note)}</div></div>`;
@@ -250,7 +257,7 @@
       h += `<button class="btn sm ghost" data-act="histBack">‹ All exercises</button>
         <section class="card"><div class="row-between"><h2>${esc(ex.name)}</h2><button class="btn sm" data-act="editExercise" data-id="${ex.id}">Edit</button></div>
         <div class="stats"><div><span class="muted small">Heaviest</span><b>${fmt(rec.maxW)} ${unit()}</b></div><div><span class="muted small">Best e1RM</span><b>${fmt(Math.round(rec.maxE * 10) / 10)} ${unit()}</b></div><div><span class="muted small">Sessions</span><b>${rec.history.length}</b></div></div>
-        ${spark(rec.history.map((x) => x.e1rm))}</section>`;
+        ${spark(rec.history.map((x) => x.e1rm))}</section>${levelCard(ex.id)}`;
       for (const x of [...rec.history].reverse()) {
         h += `<div class="list-item static"><div><b>${fmtDate(x.date)}</b><div class="small">${x.sets.map((s) => `${fmt(s.w)}×${s.r}`).join(", ")}</div></div><span class="muted small">e1RM ${fmt(Math.round(x.e1rm))}</span></div>`;
       }
@@ -261,9 +268,105 @@
     rows.sort((a, b) => b.rec.history[b.rec.history.length - 1].date.localeCompare(a.rec.history[a.rec.history.length - 1].date));
     for (const { e, rec } of rows) {
       const lastH = rec.history[rec.history.length - 1];
-      h += `<div class="list-item" data-act="histEx" data-id="${e.id}"><div><b>${esc(e.name)}</b><div class="muted small">last ${fmtDate(lastH.date)} · top ${fmt(rec.maxW)} ${unit()} · e1RM ${fmt(Math.round(rec.maxE))}</div></div><span class="chev">›</span></div>`;
+      h += `<div class="list-item" data-act="histEx" data-id="${e.id}"><div><b>${esc(e.name)}</b>${lvlBadge(e.id)}<div class="muted small">last ${fmtDate(lastH.date)} · top ${fmt(rec.maxW)} ${unit()} · e1RM ${fmt(Math.round(rec.maxE))}</div></div><span class="chev">›</span></div>`;
     }
     return h;
+  }
+
+  // ---------- achievements ----------
+  // Cached per render: compute() walks all history once, which is cheap but needn't run per card.
+  let achCache = null, achKey = null;
+  function ach() {
+    const key = db.sessions.length + ":" + (db.sessions[db.sessions.length - 1]?.id || "") + ":" + db.exercises.length;
+    if (achKey !== key || !achCache) { achCache = Achievements.compute(db); achKey = key; }
+    return achCache;
+  }
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  // Active progression theme (names/icons/wording). Mechanics are the same for every theme.
+  const T = () => Themes.get(db.settings.theme);
+  const TX = () => T().text;
+  const famText = (id) => T().families[id];
+  const famDesc = (id, n) => famText(id).desc(n, Achievements.C);
+  const tierChip = (t) => (t ? `<span class="tier" style="--t:${t.color}">${esc(t.name)}</span>` : `<span class="tier locked">${esc(TX().locked)}</span>`);
+  const lvl = (n) => `<span class="lvl">${esc(TX().levelWord)} ${n}</span>`;
+  function lvlBadge(exId) {
+    const st = ach().ex.get(exId);
+    return st ? ` ${lvl(st.level)}` : "";
+  }
+  function nextLevelText(st) {
+    if (!st.next) return "";
+    if (st.next.e1rm != null) return `Next level at est. 1RM ${fmt(Math.ceil(st.next.e1rm * 10) / 10)} ${unit()}`;
+    return `Next level at ${st.next.reps} reps (bodyweight)`;
+  }
+  function levelCard(exId) {
+    const st = ach().ex.get(exId);
+    if (!st) return "";
+    return `<section class="card"><div class="row-between"><h2>${lvl(st.level)}</h2><span class="muted small">+${Math.floor(st.gain * 100)}% vs first session</span></div>
+      <div class="bar lv"><i style="width:${pct(st.levelProgress)}"></i></div>
+      <div class="muted small">${esc(nextLevelText(st))} · ${st.prs} PRs · ${st.clears}× top of range</div></section>`;
+  }
+  function closest(n) {
+    return ach().families.filter((f) => f.next != null).sort((a, b) => b.bandProgress - a.bandProgress).slice(0, n);
+  }
+  function famRow(f) {
+    const ft = famText(f.id);
+    const goal = f.next != null ? famDesc(f.id, f.next) : TX().maxed;
+    const val = f.id === "gain" ? `${f.value}%` : f.value;
+    return `<div class="ach"><div class="ach-ic">${ft.icon}</div><div class="grow">
+      <div class="row-between"><b>${esc(ft.name)}</b>${tierChip(T().tiers[f.tier - 1])}</div>
+      <div class="muted small">${esc(goal)}</div>
+      ${f.next != null ? `<div class="bar sm"><i style="width:${pct(f.progress)}"></i></div><div class="muted small">${val} / ${f.id === "gain" ? f.next + "%" : f.next}</div>` : ""}
+      <div class="pips">${f.tiers.map((_, i) => `<i class="${i < f.tier ? "on" : ""}" style="--t:${T().tiers[i].color}"></i>`).join("")}</div>
+    </div></div>`;
+  }
+  function homeGoals() {
+    const a = ach();
+    if (!a.stats.sessions) return "";
+    const s = a.stats;
+    const f = closest(1)[0];
+    return `<section class="card"><div class="row-between"><h2>${esc(TX().streak(s.currentStreak))}</h2><span class="muted small">this week ${Math.min(s.thisWeek, Achievements.WEEKLY_TARGET)}/${Achievements.WEEKLY_TARGET}</span></div>
+      ${f ? `<div class="muted small">${esc(TX().nextUp)}: ${famText(f.id).icon} ${esc(famText(f.id).name)} — ${esc(famDesc(f.id, f.next))}</div><div class="bar sm"><i style="width:${pct(f.progress)}"></i></div>` : ""}
+      <button class="btn sm ghost" data-act="goAwards">${esc(TX().title)} ›</button></section>`;
+  }
+
+  function viewAwards() {
+    const a = ach(), X = TX();
+    const total = a.families.reduce((n, f) => n + f.tiers.length, 0) + a.feats.length;
+    const earned = a.earnedIds.size;
+    let h = `<div class="row-between"><h1>${esc(X.title)}</h1><button class="btn sm ghost" data-act="goTheme">${T().icon} ${esc(T().name)}</button></div>`;
+    h += `<section class="card"><div class="stats">
+      <div><span class="muted small">Streak</span><b>${esc(X.streakShort(a.stats.currentStreak))}</b></div>
+      <div><span class="muted small">${esc(X.prs)}</span><b>${X.prsIcon} ${a.stats.prs}</b></div>
+      <div><span class="muted small">Unlocked</span><b>${earned} / ${total}</b></div></div>
+      <div class="bar"><i style="width:${pct(earned / total)}"></i></div>
+      <p class="muted small">Progress is measured against your own first session on each exercise, so custom exercises count the same as built-in ones.</p></section>`;
+    if (!a.stats.sessions) return h + `<p class="muted center">${esc(X.empty)}</p>`;
+    h += `<section class="card"><h2>${esc(X.closest)}</h2>${closest(3).map(famRow).join("")}</section>`;
+    h += `<section class="card"><h2>${esc(X.families)}</h2>${a.families.map(famRow).join("")}</section>`;
+    h += `<section class="card"><h2>${esc(X.feats)}</h2>${a.feats.map((f) => {
+      const ft = T().feats[f.id];
+      return `<div class="ach ${f.earned ? "" : "dim"}"><div class="ach-ic">${ft.icon}</div><div class="grow"><div class="row-between"><b>${esc(ft.name)}</b>${f.earned ? `<span class="tier" style="--t:var(--accent)">${esc(X.done)}</span>` : tierChip(null)}</div><div class="muted small">${esc(ft.desc)}</div></div></div>`;
+    }).join("")}</section>`;
+    const rows = [...a.ex.values()].filter((st) => exById(st.id)).sort((x, y) => y.level - x.level || y.gain - x.gain);
+    h += `<section class="card"><h2>${esc(X.levels)}</h2><p class="muted small">${esc(X.levelsIntro(Math.round(Achievements.LEVEL_STEP * 100)))}</p>`;
+    for (const st of rows) {
+      const e = exById(st.id);
+      h += `<div class="list-item" data-act="histExFromAwards" data-id="${e.id}"><div class="grow"><div class="row-between"><b>${esc(e.name)}</b>${lvl(st.level)}</div>
+        <div class="bar sm lv"><i style="width:${pct(st.levelProgress)}"></i></div>
+        <div class="muted small">+${Math.floor(st.gain * 100)}% · ${esc(nextLevelText(st))}</div></div></div>`;
+    }
+    h += `</section>`;
+    return h;
+  }
+
+  function themePicker() {
+    const cur = T().id;
+    return `<section class="card" id="themeCard"><h2>Progression theme</h2>
+      <p class="muted small">Changes names and looks only. What you've earned stays the same.</p><div class="stack">
+      ${Themes.list.map((t) => `<div class="list-item theme ${t.id === cur ? "on" : ""}" data-act="setTheme" data-v="${t.id}">
+        <div class="ach-ic">${t.icon}</div><div class="grow"><b>${esc(t.name)}</b><div class="muted small">${esc(t.tagline)}</div>
+        <div class="pips tiers">${t.tiers.map((x) => `<span class="tier" style="--t:${x.color}">${esc(x.name)}</span>`).join("")}</div></div>
+        <span class="chev">${t.id === cur ? "✓" : ""}</span></div>`).join("")}</div></section>`;
   }
 
   function viewSettings() {
@@ -280,6 +383,7 @@
           <label>Fat (g)<input inputmode="numeric" data-goal="f" value="${fmt(g.f)}"></label>
         </div>
         <p class="muted small" id="macroKcal">${macroKcalText()}</p></section>
+      ${themePicker()}
       <section class="card"><h2>Data</h2>
         <p class="muted small">Everything is stored on this device only. Last backup: <b>${lastBk}</b>.</p>
         <div class="stack"><button class="btn" data-act="export">Export backup (.json)</button>
@@ -364,6 +468,20 @@
   const macroLine = (m) => `<b>${r0(m.kcal)} kcal</b> · P ${r0(m.p)} · C ${r0(m.c)} · F ${r0(m.f)}`;
 
   const MODALS = {
+    celebrate() {
+      const m = ui.modal, X = TX();
+      const row = (u) => {
+        const t = u.kind === "feat" ? T().feats[u.id] : famText(u.id);
+        const desc = u.kind === "feat" ? t.desc : famDesc(u.id, Achievements.FAMILIES.find((f) => f.id === u.id).tiers[u.tier]);
+        return `<div class="ach pop"><div class="ach-ic">${t.icon}</div><div class="grow"><div class="row-between"><b>${esc(t.name)}</b>${u.kind === "family" ? tierChip(T().tiers[u.tier]) : ""}</div><div class="muted small">${esc(desc)}</div></div></div>`;
+      };
+      let b = `<p class="muted">Saved: ${esc(m.summary)}.</p>`;
+      if (m.unlocked.length) b += `<div class="card"><h2>${esc(X.celebrateUnlocked)}</h2>${m.unlocked.map(row).join("")}</div>`;
+      if (m.levelUps.length) b += `<div class="card"><h2>${esc(X.celebrateLevelUp)}</h2>${m.levelUps.map((l) => `<div class="small"><b>${esc(exById(l.id)?.name || "?")}</b> · ${esc(X.levelWord)} ${l.from} → ${lvl(l.to)}</div>`).join("")}</div>`;
+      if (m.prs.length) b += `<div class="card"><h2>${esc(X.celebratePRs)}</h2><div class="small">${m.prs.map(esc).join(", ")}</div></div>`;
+      b += `<button class="btn primary big" data-act="closeModal">${esc(X.celebrateButton)}</button>`;
+      return { title: X.celebrateTitle, body: b };
+    },
     exPicker() {
       return { title: "Add exercise", body: `<input class="search" type="search" placeholder="Search, or type a new name" data-search="ex" value="${esc(ui.modal.q)}" autofocus><div id="mlist" class="stack">${exPickerList()}</div>` };
     },
@@ -581,12 +699,16 @@
     histMode: (d) => { ui.histMode = d.v; ui.histEx = null; render(); },
     histEx: (d) => { ui.histEx = d.id; render(); window.scrollTo(0, 0); },
     histBack: () => { ui.histEx = null; render(); },
+    goAwards: () => { ui.tab = "awards"; sessionStorage.setItem("tab", ui.tab); render(); window.scrollTo(0, 0); },
+    histExFromAwards: (d) => { ui.tab = "history"; ui.histMode = "exercise"; ui.histEx = d.id; sessionStorage.setItem("tab", ui.tab); render(); window.scrollTo(0, 0); },
     delSession: (d) => {
       if (!confirm("Delete this workout from history?")) return;
       db.sessions = db.sessions.filter((s) => s.id !== d.id); commit();
     },
     // settings
     setUnit: (d) => { db.settings.unit = d.v; commit(); },
+    setTheme: (d) => { db.settings.theme = d.v; commit(); toast(`${T().icon} ${T().name} theme on`); },
+    goTheme: () => { ui.tab = "settings"; sessionStorage.setItem("tab", ui.tab); render(); $("#themeCard")?.scrollIntoView(); },
     export: () => { db.settings.lastExport = new Date().toISOString(); persist(); Store.exportJSON(db); render(); },
     resetAll: () => {
       if (!confirm("Erase ALL workouts, foods and settings on this device?")) return;

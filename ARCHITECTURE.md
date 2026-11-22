@@ -16,6 +16,8 @@ styles.css            mobile-first dark UI
 js/store.js           load/save/export/import, ids, date helpers
 js/progression.js     double-progression + PR/e1RM math (pure functions)
 js/baseline.js        built-in exercise library + substitute groups + idempotent seed
+js/achievements.js    achievements, feats, per-exercise levels (pure functions, derived from history)
+js/themes.js          progression themes: names, icons, tier names/colors, wording (no mechanics)
 js/app.js             views (Workout / Food / History / Settings) + event handling
 manifest.webmanifest  PWA metadata
 sw.js                 offline cache of the app shell
@@ -62,6 +64,18 @@ Looking at the **last finished session** that included the exercise (completed s
 
 The suggestion pre-fills the set inputs, and you can overwrite anything.
 Also tracked per exercise: heaviest weight, best estimated 1RM (Epley: `w × (1 + r/30)`), and an e1RM trend chart.
+
+## Achievements (`js/achievements.js`)
+Computed from finished sessions every time, never stored, so they work retroactively and survive export/import.
+They only read fields **every** exercise has (weight, reps, `repMax`, `sets`), so custom exercises count exactly like built-in ones.
+Progress is always relative to your own first session on that exercise, never absolute kilos, so the kg/lb label doesn't matter.
+- **Strength score** per set: Epley e1RM. Bodyweight sets (w = 0) use `1 + r/30` (bodyweight = 1). Weighted and bodyweight series are tracked separately.
+- **Exercise level**: +1 level for every 5% the best score beats the first session's.
+- **Tiered families** (Bronze → Legend): workouts, weekly streak (2+ training days/week), PRs, top-of-range clears, new top weights, best % gain, sets, exercises tried, exercises at level 5.
+- **Feats**: Clean Sweep (3+ PRs in one workout), Comeback (14+ day break), Bread & Butter (20 sessions of one exercise).
+- "Top of the range" uses the exercise's *current* rep range and set count, so editing them changes past counts.
+**Themes** (`js/themes.js`, chosen in Settings, saved as `settings.theme`, included in backups): *Iron Classic* (default), *Greek Myth*, *Roman Legion*, *Olympic Path*. Only owner-approved themes are added. A theme only renames and re-skins; thresholds and rules are shared, so switching never changes what's earned. Add a theme by copying one object with a new `id`.
+Finishing a workout diffs before/after and shows a sheet with unlocks, level-ups and PRs.
 
 ## Workout flow (mix of routines + freestyle)
 Start from a routine (pre-loads its exercises) **or** start empty. Add or remove exercises at any time.
